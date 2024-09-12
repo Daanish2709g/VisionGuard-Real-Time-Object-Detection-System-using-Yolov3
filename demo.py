@@ -1,57 +1,27 @@
-"""Demo for use yolo v3
-"""
 import os
 import time
 import cv2
 import numpy as np
 from model.yolo_model import YOLO
 
-
 def process_image(img):
-    """Resize, reduce and expand image.
-
-    # Argument:
-        img: original image.
-
-    # Returns
-        image: ndarray(64, 64, 3), processed image.
-    """
-    image = cv2.resize(img, (416, 416),
-                       interpolation=cv2.INTER_CUBIC)
-    image = np.array(image, dtype='float32')
-    image /= 255.
+    """Resize, normalize, and expand image dimensions for YOLO model input."""
+    image = cv2.resize(img, (416, 416), interpolation=cv2.INTER_CUBIC)
+    image = np.array(image, dtype='float32') / 255.0
     image = np.expand_dims(image, axis=0)
-
     return image
 
-
 def get_classes(file):
-    """Get classes name.
-
-    # Argument:
-        file: classes name for database.
-
-    # Returns
-        class_names: List, classes name.
-
-    """
+    """Read class names from a file."""
+    if not os.path.exists(file):
+        raise FileNotFoundError(f"Class names file '{file}' not found.")
+    
     with open(file) as f:
-        class_names = f.readlines()
-    class_names = [c.strip() for c in class_names]
-
+        class_names = [line.strip() for line in f.readlines()]
     return class_names
 
-
 def draw(image, boxes, scores, classes, all_classes):
-    """Draw the boxes on the image.
-
-    # Argument:
-        image: original image.
-        boxes: ndarray, boxes of objects.
-        classes: ndarray, classes of objects.
-        scores: ndarray, scores of objects.
-        all_classes: all classes name.
-    """
+    """Draw bounding boxes and labels on the image."""
     for box, score, cl in zip(boxes, scores, classes):
         x, y, w, h = box
 
@@ -60,104 +30,72 @@ def draw(image, boxes, scores, classes, all_classes):
         right = min(image.shape[1], np.floor(x + w + 0.5).astype(int))
         bottom = min(image.shape[0], np.floor(y + h + 0.5).astype(int))
 
+        # Draw rectangle and label
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
-        cv2.putText(image, '{0} {1:.2f}'.format(all_classes[cl], score),
-                    (top, left - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 0, 255), 1,
-                    cv2.LINE_AA)
+        label = f'{all_classes[cl]} {score:.2f}'
+        cv2.putText(image, label, (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
 
-        print('class: {0}, score: {1:.2f}'.format(all_classes[cl], score))
-        print('box coordinate x,y,w,h: {0}'.format(box))
-
-    print()
-
+        print(f'class: {all_classes[cl]}, score: {score:.2f}')
+        print(f'box coordinates x,y,w,h: {box}')
 
 def detect_image(image, yolo, all_classes):
-    """Use yolo v3 to detect images.
-
-    # Argument:
-        image: original image.
-        yolo: YOLO, yolo model.
-        all_classes: all classes name.
-
-    # Returns:
-        image: processed image.
-    """
+    """Detect objects in a single image using YOLO model."""
     pimage = process_image(image)
 
     start = time.time()
     boxes, classes, scores = yolo.predict(pimage, image.shape)
     end = time.time()
 
-    print('time: {0:.2f}s'.format(end - start))
+    print(f'YOLO inference time: {end - start:.2f}s')
 
     if boxes is not None:
         draw(image, boxes, scores, classes, all_classes)
 
     return image
 
-
 def detect_video(video, yolo, all_classes):
-    """Use yolo v3 to detect video.
-
-    # Argument:
-        video: video file.
-        yolo: YOLO, yolo model.
-        all_classes: all classes name.
-    """
+    """Detect objects in a video frame by frame."""
     video_path = os.path.join("videos", "test", video)
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"Video file '{video_path}' not found.")
+    
     camera = cv2.VideoCapture(video_path)
+    if not camera.isOpened():
+        raise RuntimeError(f"Failed to open video file '{video_path}'.")
+
     cv2.namedWindow("detection", cv2.WINDOW_AUTOSIZE)
 
-    # Prepare for saving the detected video
-    sz = (int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    fourcc = cv2.VideoWriter_fourcc(*'mpeg')
-
-    
-    vout = cv2.VideoWriter()
-    vout.open(os.path.join("videos", "res", video), fourcc, 20, sz, True)
+    # Prepare video writer for saving output
+    frame_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    video_writer = cv2.VideoWriter(os.path.join("videos", "res", video),
+                                   cv2.VideoWriter_fourcc(*'mp4v'), 20, (frame_width, frame_height))
 
     while True:
-        res, frame = camera.read()
-
-        if not res:
+        ret, frame = camera.read()
+        if not ret:
+            print("End of video or failed to capture frame.")
             break
 
-        image = detect_image(frame, yolo, all_classes)
-        cv2.imshow("detection", image)
+        processed_frame = detect_image(frame, yolo, all_classes)
+        cv2.imshow("detection", processed_frame)
+        video_writer.write(processed_frame)
 
-        # Save the video frame by frame
-        vout.write(image)
+        if cv2.waitKey(1) & 0xFF == 27:  # Press 'Esc' to quit
+            break
 
-        if cv2.waitKey(110) & 0xff == 27:
-                break
-
-    vout.release()
     camera.release()
-    
-
+    video_writer.release()
+    cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    yolo = YOLO(0.6, 0.5)
-    file = 'data/coco_classes.txt'
-    all_classes = get_classes(file)
+    # Initialize YOLO model with threshold values
+    yolo = YOLO(confidence_threshold=0.6, iou_threshold=0.5)
 
-    '''
-    # detect images in test floder.
-    for (root, dirs, files) in os.walk('images/test'):
-        if files:
-            for f in files:
-                print(f)
-                path = os.path.join(root, f)
-                image = cv2.imread(path)
-                image = detect_image(image, yolo, all_classes)
-                cv2.imwrite('images/res/' + f, image)
+    # Load class names from file
+    classes_file = 'data/coco_classes.txt'
+    all_classes = get_classes(classes_file)
 
-	'''
-
-    # detect videos one at a time in videos/test folder    
-    video = 'library1.mp4'
-    detect_video(video, yolo, all_classes)
-    
+    # Process video
+    video_file = 'library1.mp4'
+    detect_video(video_file, yolo, all_classes)
